@@ -12,3 +12,20 @@ Pipfile.lock
 molecule/**/es_certs/
 molecule/**/opendistro/
 repository_bumper_*.log
+
+# SSH keys and sensitive files
+*.pem
+*.key
+*.ppk
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+keys/
+.ssh/
+
+# Environment and secrets
+.env
+*.secret
+secrets.yml
+vault-password.txt

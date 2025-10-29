@@ -1,0 +1,43 @@
+# Wazuh Ansible Inventory File
+# ============================================================
+# Configure your node IPs below
+# ansible_host = IP address Ansible uses to connect to the node
+# private_ip = IP address used for internal cluster communication
+# (In a private network, these are typically the same)
+
+# Wazuh Indexer Cluster Nodes (3 nodes required)
+# ============================================================
+wi1 ansible_host=10.250.32.113 private_ip=10.250.32.113 indexer_node_name=node-1
+wi2 ansible_host=10.250.32.114 private_ip=10.250.32.114 indexer_node_name=node-2
+wi3 ansible_host=10.250.32.115 private_ip=10.250.32.115 indexer_node_name=node-3
+
+# Wazuh Manager Nodes (Master + Worker)
+# ============================================================
+manager ansible_host=10.250.32.116 private_ip=10.250.32.116
+worker ansible_host=10.250.32.117 private_ip=10.250.32.117
+
+# Wazuh Dashboard Node
+# ============================================================
+dashboard ansible_host=10.250.32.110 private_ip=10.250.32.110
+
+# Group Definitions
+# ============================================================
+[wi_cluster]
+wi1
+wi2
+wi3
+
+# Global SSH Connection Settings
+# ============================================================
+[all:vars]
+# SSH user that Ansible will use to connect
+ansible_ssh_user=ansible
+
+# Path to your SSH private key
+ansible_ssh_private_key_file=~/.ssh/ansible_wazuh_prod
+
+# SSH connection options
+ansible_ssh_extra_args='-o StrictHostKeyChecking=no'
+
+# Python interpreter (prevents discovery warnings)
+ansible_python_interpreter=/usr/bin/python3
