@@ -33,20 +33,22 @@ deploy:
 	@echo "Deploying Wazuh to all servers..."
 	ansible-playbook -i inventory playbooks/wazuh-production-ready.yml
 
-# Deploy only indexer cluster
+# Deploy only indexer cluster (all 3 indexer nodes)
 deploy-indexer:
-	@echo "Deploying Wazuh indexer cluster..."
-	ansible-playbook -i inventory playbooks/wazuh-production-ready.yml --tags generate-certs
-	ansible-playbook -i inventory playbooks/wazuh-production-ready.yml --limit wi_cluster
+	@echo "Deploying Wazuh indexer cluster (wi1, wi2, wi3)..."
+	@echo "Note: This will deploy all indexer nodes in the wi_cluster group"
+	ansible-playbook -i inventory playbooks/wazuh-production-ready.yml --limit wi1,wi_cluster
 
-# Deploy only manager nodes
+# Deploy only manager nodes (both master and worker)
 deploy-manager:
-	@echo "Deploying Wazuh manager nodes..."
+	@echo "Deploying Wazuh manager nodes (manager + worker)..."
+	@echo "Note: This will deploy both master and worker manager nodes"
 	ansible-playbook -i inventory playbooks/wazuh-production-ready.yml --limit manager,worker
 
-# Deploy only dashboard
+# Deploy only dashboard (single dashboard node)
 deploy-dashboard:
 	@echo "Deploying Wazuh dashboard..."
+	@echo "Note: This will deploy only the dashboard node"
 	ansible-playbook -i inventory playbooks/wazuh-production-ready.yml --limit dashboard
 
 # Clean up retry files
