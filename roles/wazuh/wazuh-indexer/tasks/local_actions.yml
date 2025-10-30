@@ -35,9 +35,13 @@
       mode: 0644
     register: tlsconfig_template
 
-  - name: Local action | Generate the node & admin certificates in local
-    command: >-
-      bash {{ local_certs_path }}/wazuh-certs-tool.sh -A
+  - name: Local action | Generate all certificates (indexer, server, dashboard, admin)
+    shell: |
+      cd {{ local_certs_path }}
+      if [[ "$(uname)" == "Darwin" ]]; then
+        export PATH="/opt/homebrew/opt/coreutils/libexec/gnubin:/opt/homebrew/opt/gnu-sed/libexec/gnubin:/opt/homebrew/opt/gawk/libexec/gnubin:/opt/homebrew/opt/grep/libexec/gnubin:$PATH"
+      fi
+      bash ./wazuh-certs-tool.sh -A
 
   run_once: true
   delegate_to: localhost

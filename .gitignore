@@ -29,3 +29,11 @@ keys/
 *.secret
 secrets.yml
 vault-password.txt
+
+# Certificates directory
+playbooks/indexer/certificates/
+wazuh-certificates/
+
+# macOS files
+.DS_Store
+**/.DS_Store

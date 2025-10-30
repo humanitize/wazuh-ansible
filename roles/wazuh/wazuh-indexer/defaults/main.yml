@@ -1,6 +1,6 @@
 ---
 # Cluster Settings
-indexer_version: 5.0.0
+indexer_version: 4.14.0
 
 single_node: false
 indexer_node_name: node-1
@@ -32,7 +32,7 @@ indexer_conf_path: /etc/wazuh-indexer
 indexer_index_path: /var/lib/wazuh-indexer/
 
 # Security password
-indexer_custom_user: ""
+indexer_custom_user: false
 indexer_custom_user_role: "admin"
 
 # Set JVM memory limits
