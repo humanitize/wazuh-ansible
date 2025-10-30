@@ -1,4 +1,4 @@
-.PHONY: help deploy check ping test-connection clean
+.PHONY: help deploy check ping test-connection clean change-password
 
 # Default target
 help:
@@ -12,6 +12,7 @@ help:
 	@echo "  make deploy-indexer  - Deploy only indexer cluster"
 	@echo "  make deploy-manager  - Deploy only manager nodes"
 	@echo "  make deploy-dashboard - Deploy only dashboard"
+	@echo "  make change-password - Change admin password"
 	@echo "  make clean           - Clean up Ansible retry files"
 	@echo ""
 
@@ -50,6 +51,12 @@ deploy-dashboard:
 	@echo "Deploying Wazuh dashboard..."
 	@echo "Note: This will deploy only the dashboard node"
 	ansible-playbook -i inventory playbooks/wazuh-production-ready.yml --limit dashboard
+
+# Change admin password
+change-password:
+	@echo "Changing Wazuh admin password..."
+	@echo "You will be prompted to enter the new password twice for confirmation"
+	ansible-playbook -i inventory playbooks/change-admin-password.yml
 
 # Clean up retry files
 clean:
