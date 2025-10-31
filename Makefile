@@ -1,4 +1,4 @@
-.PHONY: help deploy check ping test-connection clean change-password
+.PHONY: help deploy check ping test-connection clean change-password fix-filebeat
 
 # Default target
 help:
@@ -13,6 +13,7 @@ help:
 	@echo "  make deploy-manager  - Deploy only manager nodes"
 	@echo "  make deploy-dashboard - Deploy only dashboard"
 	@echo "  make change-password - Change admin password"
+	@echo "  make fix-filebeat    - Fix Filebeat OpenSearch 2.x compatibility"
 	@echo "  make clean           - Clean up Ansible retry files"
 	@echo ""
 
@@ -57,6 +58,12 @@ change-password:
 	@echo "Changing Wazuh admin password..."
 	@echo "You will be prompted to enter the new password twice for confirmation"
 	ansible-playbook -i inventory playbooks/change-admin-password.yml
+
+# Fix Filebeat OpenSearch 2.x compatibility
+fix-filebeat:
+	@echo "Fixing Filebeat compatibility with OpenSearch 2.x..."
+	@echo "This resolves the '_type parameter' error"
+	ansible-playbook -i inventory playbooks/fix-filebeat-opensearch-compatibility.yml
 
 # Clean up retry files
 clean:

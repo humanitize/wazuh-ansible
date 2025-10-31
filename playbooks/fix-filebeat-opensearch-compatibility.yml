@@ -1,0 +1,74 @@
+---
+# Playbook to fix Filebeat compatibility with OpenSearch 2.x (Wazuh Indexer 4.14.0)
+#
+# Problem: Filebeat 7.10.2 with Wazuh module 0.4 sends deprecated "_type" parameter
+# which is not supported in OpenSearch 2.x
+#
+# Solution: Override index settings and use compatibility mode
+#
+# Usage: ansible-playbook -i inventory playbooks/fix-filebeat-opensearch-compatibility.yml
+
+- hosts: manager,worker
+  become: yes
+  become_user: root
+
+  tasks:
+    - name: Backup current Filebeat configuration
+      copy:
+        src: /etc/filebeat/filebeat.yml
+        dest: /etc/filebeat/filebeat.yml.backup
+        remote_src: yes
+        mode: '0644'
+
+    - name: Check if compatibility fix already applied
+      shell: grep -q "OpenSearch 2.x compatibility" /etc/filebeat/filebeat.yml
+      register: fix_applied
+      failed_when: false
+      changed_when: false
+
+    - name: Add OpenSearch 2.x compatibility settings
+      blockinfile:
+        path: /etc/filebeat/filebeat.yml
+        marker: "# {mark} ANSIBLE MANAGED - OpenSearch 2.x compatibility"
+        insertbefore: "^output.elasticsearch:"
+        block: |
+          # Override index name to avoid _type parameter issues
+          output.elasticsearch.index: "wazuh-alerts-4.x-%{+yyyy.MM.dd}"
+      when: fix_applied.rc != 0
+
+    - name: Add allow_older_versions setting
+      lineinfile:
+        path: /etc/filebeat/filebeat.yml
+        insertafter: "^output.elasticsearch:"
+        line: "  allow_older_versions: true"
+        state: present
+
+    - name: Restart Filebeat service
+      systemd:
+        name: filebeat
+        state: restarted
+        enabled: yes
+
+    - name: Wait for Filebeat to stabilize
+      pause:
+        seconds: 5
+
+    - name: Check Filebeat logs for errors
+      shell: journalctl -u filebeat -n 20 --no-pager | grep -iE "(error|fail|_type)" || echo "No errors found"
+      register: filebeat_logs
+      changed_when: false
+
+    - name: Display Filebeat status
+      debug:
+        msg: "{{ filebeat_logs.stdout_lines }}"
+
+    - name: Verify Filebeat is running
+      systemd:
+        name: filebeat
+        state: started
+      check_mode: yes
+      register: filebeat_running
+
+    - name: Display final status
+      debug:
+        msg: "Filebeat is {{ 'running' if filebeat_running.changed == false else 'not running' }} on {{ inventory_hostname }}"

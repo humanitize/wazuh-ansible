@@ -12,12 +12,16 @@ setup.template.json.name: 'wazuh'
 setup.template.overwrite: true
 setup.ilm.enabled: false
 
+# OpenSearch 2.x compatibility: explicitly set index name to avoid _type parameter issues
+output.elasticsearch.index: "wazuh-alerts-4.x-%{+yyyy.MM.dd}"
+
 # Send events directly to Wazuh indexer
 output.elasticsearch:
   hosts:
 {% for item in filebeat_output_indexer_hosts %}
   - {{ item }}
 {% endfor %}
+  allow_older_versions: true
 
 {% if filebeat_security %}
   username: {{ indexer_security_user }}
