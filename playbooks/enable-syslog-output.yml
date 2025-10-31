@@ -1,0 +1,120 @@
+---
+# Playbook to enable syslog output in Wazuh Manager
+#
+# This enables forwarding of Wazuh alerts to a syslog server (local or remote)
+# You can configure:
+# - Syslog server IP/hostname and port
+# - Alert level threshold
+# - Log format (default, json, or splunk)
+#
+# Usage: ansible-playbook -i inventory playbooks/enable-syslog-output.yml
+
+- hosts: manager,worker
+  become: yes
+  become_user: root
+
+  vars_prompt:
+    - name: syslog_server
+      prompt: "Enter syslog server IP/hostname (or 'localhost' for local)"
+      private: no
+      default: "localhost"
+
+    - name: syslog_port
+      prompt: "Enter syslog port"
+      private: no
+      default: "514"
+
+    - name: syslog_format
+      prompt: "Enter log format (default/json/splunk/cef)"
+      private: no
+      default: "default"
+
+    - name: alert_level
+      prompt: "Enter minimum alert level to forward (0-16)"
+      private: no
+      default: "3"
+
+  tasks:
+    - name: Backup current ossec.conf
+      copy:
+        src: /var/ossec/etc/ossec.conf
+        dest: /var/ossec/etc/ossec.conf.backup-syslog-{{ ansible_date_time.epoch }}
+        remote_src: yes
+        mode: '0640'
+        owner: root
+        group: wazuh
+
+    - name: Check if syslog_output already exists
+      shell: grep -q '<syslog_output>' /var/ossec/etc/ossec.conf
+      register: syslog_exists
+      failed_when: false
+      changed_when: false
+
+    - name: Remove existing syslog_output configuration if present
+      shell: |
+        sed -i '/<syslog_output>/,/<\/syslog_output>/d' /var/ossec/etc/ossec.conf
+      when: syslog_exists.rc == 0
+
+    - name: Add syslog_output configuration to ossec.conf
+      blockinfile:
+        path: /var/ossec/etc/ossec.conf
+        marker: "<!-- {mark} ANSIBLE MANAGED SYSLOG OUTPUT -->"
+        insertbefore: "</ossec_config>"
+        block: |2
+            <syslog_output>
+              <server>{{ syslog_server }}</server>
+              <port>{{ syslog_port }}</port>
+              <format>{{ syslog_format }}</format>
+              <level>{{ alert_level }}</level>
+            </syslog_output>
+
+    - name: Validate ossec.conf syntax
+      shell: /var/ossec/bin/wazuh-logtest -t
+      register: validate_result
+      failed_when: false
+      changed_when: false
+
+    - name: Display validation result
+      debug:
+        var: validate_result.stdout_lines
+
+    - name: Restart Wazuh Manager service
+      systemd:
+        name: wazuh-manager
+        state: restarted
+
+    - name: Wait for Wazuh Manager to start
+      wait_for:
+        host: "{{ hostvars[inventory_hostname]['private_ip'] | default(ansible_default_ipv4.address) }}"
+        port: 1514
+        delay: 5
+        timeout: 60
+
+    - name: Check Wazuh Manager status
+      systemd:
+        name: wazuh-manager
+        state: started
+      check_mode: yes
+      register: manager_status
+
+    - name: Display Wazuh Manager status
+      debug:
+        msg: "Wazuh Manager is {{ 'running' if not manager_status.changed else 'not running' }} on {{ inventory_hostname }}"
+
+    - name: Check ossec.log for syslog output initialization
+      shell: tail -20 /var/ossec/logs/ossec.log | grep -i syslog || echo "No syslog messages in log yet"
+      register: syslog_log
+      changed_when: false
+
+    - name: Display syslog initialization log
+      debug:
+        var: syslog_log.stdout_lines
+
+    - name: Display configuration summary
+      debug:
+        msg:
+          - "Syslog output has been enabled on {{ inventory_hostname }}"
+          - "Server: {{ syslog_server }}:{{ syslog_port }}"
+          - "Format: {{ syslog_format }}"
+          - "Alert Level: {{ alert_level }}"
+          - "Alerts with level >= {{ alert_level }} will be forwarded to syslog"

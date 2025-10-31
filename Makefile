@@ -14,6 +14,7 @@ help:
 	@echo "  make deploy-dashboard - Deploy only dashboard"
 	@echo "  make change-password - Change admin password"
 	@echo "  make fix-indexer-compat - Fix indexer Filebeat 7.x compatibility"
+	@echo "  make enable-syslog   - Enable syslog output for alert forwarding"
 	@echo "  make clean           - Clean up Ansible retry files"
 	@echo ""
 
@@ -64,6 +65,12 @@ fix-indexer-compat:
 	@echo "Fixing Wazuh Indexer compatibility with Filebeat 7.x..."
 	@echo "This resolves the '_type parameter' error"
 	ansible-playbook -i inventory playbooks/fix-indexer-filebeat-compatibility.yml
+
+# Enable syslog output for alert forwarding
+enable-syslog:
+	@echo "Enabling syslog output in Wazuh Manager..."
+	@echo "You will be prompted for syslog configuration"
+	ansible-playbook -i inventory playbooks/enable-syslog-output.yml
 
 # Clean up retry files
 clean:

@@ -1,0 +1,93 @@
+---
+# Playbook to fix indexer-connector authentication
+#
+# Problem: indexer-connector is failing to sync agent data with indexer
+# because authentication credentials are missing from the configuration
+#
+# This prevents vulnerability detection from working because the indexer
+# doesn't receive syscollector package inventory data
+#
+# Usage: ansible-playbook -i inventory playbooks/fix-indexer-connector-auth.yml
+
+- hosts: manager,worker
+  become: yes
+  become_user: root
+
+  vars:
+    indexer_user: "admin"
+    indexer_password: "d3_rCKXczF2ZUHsH_y!DimBqP"
+
+  tasks:
+    - name: Backup current ossec.conf
+      copy:
+        src: /var/ossec/etc/ossec.conf
+        dest: /var/ossec/etc/ossec.conf.backup-indexer-auth-{{ ansible_date_time.epoch }}
+        remote_src: yes
+        mode: '0640'
+        owner: root
+        group: wazuh
+
+    - name: Check if indexer authentication already exists
+      shell: grep -q '<username>' /var/ossec/etc/ossec.conf
+      register: auth_exists
+      failed_when: false
+      changed_when: false
+
+    - name: Display current indexer configuration section
+      shell: grep -A 20 '<indexer>' /var/ossec/etc/ossec.conf
+      register: current_config
+      changed_when: false
+
+    - name: Show current config
+      debug:
+        var: current_config.stdout_lines
+
+    - name: Add authentication to indexer configuration
+      blockinfile:
+        path: /var/ossec/etc/ossec.conf
+        marker: "    <!-- {mark} ANSIBLE MANAGED INDEXER AUTH -->"
+        insertafter: "^\\s*<enabled>yes</enabled>"
+        block: |2
+              <username>{{ indexer_user }}</username>
+              <password>{{ indexer_password }}</password>
+      when: auth_exists.rc != 0
+
+    - name: Restart Wazuh Manager service
+      systemd:
+        name: wazuh-manager
+        state: restarted
+
+    - name: Wait for Wazuh Manager to start
+      wait_for:
+        host: "{{ hostvars[inventory_hostname]['private_ip'] | default(ansible_default_ipv4.address) }}"
+        port: 1514
+        delay: 5
+        timeout: 60
+
+    - name: Wait for indexer-connector to initialize
+      pause:
+        seconds: 10
+
+    - name: Check for indexer-connector errors in recent logs
+      shell: tail -50 /var/ossec/logs/ossec.log | grep -i 'indexer-connector' || echo "No recent indexer-connector messages"
+      register: connector_logs
+      changed_when: false
+
+    - name: Display indexer-connector status
+      debug:
+        var: connector_logs.stdout_lines
+
+    - name: Check Wazuh Manager status
+      systemd:
+        name: wazuh-manager
+        state: started
+      check_mode: yes
+      register: manager_status
+
+    - name: Display success message
+      debug:
+        msg:
+          - "Indexer-connector authentication has been configured on {{ inventory_hostname }}"
+          - "Username: {{ indexer_user }}"
+          - "The manager should now successfully sync agent data to the indexer"
+          - "Vulnerability detection should start working within a few minutes"
