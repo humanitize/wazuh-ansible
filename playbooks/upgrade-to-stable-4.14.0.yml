@@ -1,0 +1,176 @@
+---
+# Playbook to upgrade Wazuh from 4.14.0-rc2 to stable 4.14.0
+#
+# Current issue: Running release candidate with indexer-connector bug
+# Solution: Upgrade to stable release from October 23, 2025
+#
+# This should fix:
+# - Indexer-connector authentication issues
+# - Vulnerability detection not working
+# - Agent inventory sync failures
+#
+# Usage: ansible-playbook -i inventory playbooks/upgrade-to-stable-4.14.0.yml
+
+- hosts: wi_cluster
+  become: yes
+  serial: 1  # Upgrade indexers one at a time
+  tasks:
+    - name: Add Wazuh repository GPG key
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Add Wazuh repository
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        filename: wazuh
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Upgrade Wazuh indexer to stable 4.14.0
+      apt:
+        name: wazuh-indexer
+        state: latest
+        force: yes
+
+    - name: Restart Wazuh indexer
+      systemd:
+        name: wazuh-indexer
+        state: restarted
+
+    - name: Wait for indexer to be available
+      wait_for:
+        host: "{{ hostvars[inventory_hostname]['private_ip'] | default(ansible_default_ipv4.address) }}"
+        port: 9200
+        delay: 10
+        timeout: 120
+
+    - name: Pause between indexer upgrades
+      pause:
+        seconds: 30
+      when: inventory_hostname != groups['wi_cluster'][-1]
+
+- hosts: manager,worker
+  become: yes
+  serial: 1  # Upgrade managers one at a time
+  tasks:
+    - name: Add Wazuh repository GPG key
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Add Wazuh repository
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        filename: wazuh
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Upgrade Wazuh manager to stable 4.14.0
+      apt:
+        name: wazuh-manager
+        state: latest
+        force: yes
+
+    - name: Restart Wazuh manager
+      systemd:
+        name: wazuh-manager
+        state: restarted
+
+    - name: Wait for Wazuh manager to be available
+      wait_for:
+        host: "{{ hostvars[inventory_hostname]['private_ip'] | default(ansible_default_ipv4.address) }}"
+        port: 1514
+        delay: 10
+        timeout: 120
+
+    - name: Check Wazuh manager version
+      shell: /var/ossec/bin/wazuh-control info
+      register: version_info
+      changed_when: false
+
+    - name: Display version info
+      debug:
+        var: version_info.stdout_lines
+
+    - name: Pause between manager upgrades
+      pause:
+        seconds: 30
+      when: inventory_hostname != groups['manager'][-1] and inventory_hostname != groups['worker'][-1]
+
+- hosts: dashboard
+  become: yes
+  tasks:
+    - name: Add Wazuh repository GPG key
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Add Wazuh repository
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        filename: wazuh
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Upgrade Wazuh dashboard to stable 4.14.0
+      apt:
+        name: wazuh-dashboard
+        state: latest
+        force: yes
+
+    - name: Restart Wazuh dashboard
+      systemd:
+        name: wazuh-dashboard
+        state: restarted
+
+    - name: Wait for dashboard to be available
+      wait_for:
+        port: 443
+        delay: 10
+        timeout: 120
+
+- hosts: manager
+  become: yes
+  tasks:
+    - name: Wait for cluster sync after all upgrades
+      pause:
+        seconds: 60
+
+    - name: Check for indexer-connector errors
+      shell: tail -50 /var/ossec/logs/ossec.log | grep -i 'indexer-connector' || echo "No recent indexer-connector messages"
+      register: connector_status
+      changed_when: false
+
+    - name: Display indexer-connector status
+      debug:
+        var: connector_status.stdout_lines
+
+    - name: Check vulnerability index
+      shell: |
+        curl -k -s -u admin:'d3_rCKXczF2ZUHsH_y!DimBqP' \
+        'https://10.250.32.113:9200/_cat/indices?v' | grep vulnerab
+      register: vuln_index
+      changed_when: false
+      failed_when: false
+
+    - name: Display vulnerability index status
+      debug:
+        var: vuln_index.stdout_lines
+
+    - name: Summary
+      debug:
+        msg:
+          - "Upgrade to stable Wazuh 4.14.0 completed"
+          - "Please check the dashboard for vulnerability detection"
+          - "It may take a few minutes for agent data to sync to indexer"
+          - "Check /var/ossec/logs/ossec.log for any remaining errors"
