@@ -1,0 +1,104 @@
+---
+# Re-enable indexer-connector after upgrading to stable Wazuh
+#
+# Run this AFTER upgrading to Wazuh 4.14.1, 4.15.0, or newer stable release
+# This reverses the temporary workaround
+#
+# Usage: ansible-playbook -i inventory playbooks/enable-indexer-connector.yml
+
+- hosts: manager,worker
+  become: yes
+  tasks:
+    - name: Check if reminder file exists
+      stat:
+        path: /var/ossec/REMINDER_RE-ENABLE_INDEXER_CONNECTOR.txt
+      register: reminder_file
+
+    - name: Display reminder if workaround was active
+      debug:
+        msg: "Workaround was active - re-enabling indexer-connector"
+      when: reminder_file.stat.exists
+
+    - name: Check current Wazuh version
+      shell: /var/ossec/bin/wazuh-control info | grep -E '(VERSION|REVISION)'
+      register: wazuh_version
+      changed_when: false
+
+    - name: Display Wazuh version
+      debug:
+        var: wazuh_version.stdout_lines
+
+    - name: Backup current ossec.conf
+      copy:
+        src: /var/ossec/etc/ossec.conf
+        dest: /var/ossec/etc/ossec.conf.backup-enable-indexer-{{ ansible_date_time.epoch }}
+        remote_src: yes
+        mode: '0640'
+        owner: root
+        group: wazuh
+
+    - name: Re-enable indexer-connector
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '(<indexer>\s*\n\s*<enabled>)no(</enabled>)'
+        replace: '\1yes\2'
+        backup: yes
+
+    - name: Verify indexer is enabled
+      shell: grep -A 2 '<indexer>' /var/ossec/etc/ossec.conf | grep '<enabled>'
+      register: indexer_status
+      changed_when: false
+
+    - name: Display indexer configuration
+      debug:
+        var: indexer_status.stdout_lines
+
+    - name: Restart Wazuh Manager
+      shell: /var/ossec/bin/wazuh-control restart
+
+    - name: Wait for Wazuh Manager to start
+      pause:
+        seconds: 20
+
+    - name: Check for successful indexer-connector initialization
+      shell: tail -50 /var/ossec/logs/ossec.log | grep -i 'indexerconnector.*initialized successfully' || tail -30 /var/ossec/logs/ossec.log | grep -i 'indexer-connector'
+      register: connector_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display indexer-connector status
+      debug:
+        var: connector_status.stdout_lines
+
+    - name: Check for errors (should be none if upgrade fixed the bug)
+      shell: tail -30 /var/ossec/logs/ossec.log | grep -i 'indexer-connector.*error\|No available server' || echo "No errors found - connector working!"
+      register: error_check
+      changed_when: false
+      failed_when: false
+
+    - name: Display error check result
+      debug:
+        var: error_check.stdout
+
+    - name: Remove reminder file if successful
+      file:
+        path: /var/ossec/REMINDER_RE-ENABLE_INDEXER_CONNECTOR.txt
+        state: absent
+      when: "'No errors found' in error_check.stdout or 'initialized successfully' in connector_status.stdout"
+
+    - name: Final status message
+      debug:
+        msg:
+          - "============================================"
+          - "INDEXER-CONNECTOR RE-ENABLED"
+          - "============================================"
+          - ""
+          - "Version: {{ wazuh_version.stdout_lines[0] if wazuh_version.stdout_lines else 'Unknown' }}"
+          - ""
+          - "Check logs above for 'initialized successfully' message"
+          - "If you still see errors, the bug may not be fixed in this version"
+          - ""
+          - "Verify in dashboard: Vulnerability Detection module should work"
+          - "Data sync: Check /var/ossec/logs/ossec.log for sync activity"
+          - ""
+          - "============================================"

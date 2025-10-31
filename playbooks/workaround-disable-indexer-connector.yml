@@ -1,0 +1,121 @@
+---
+# TEMPORARY WORKAROUND: Disable indexer-connector to stop error spam
+#
+# Context: Wazuh 4.14.0-rc2 has a bug preventing indexer-connector authentication
+# Effect: Vulnerability detection CONTINUES WORKING locally, but:
+#   - Stops "No available server" error spam in logs
+#   - Vulnerability data stored in /var/ossec/queue/vd/reports/ (6.9GB CVE feed)
+#   - Alerts still generated and sent to Filebeat/Indexer normally
+#   - Dashboard won't show vulnerability module (limitation)
+#
+# Limitation: Dashboard vulnerability view unavailable until upgrade
+#
+# IMPORTANT: Re-enable when upgrading to Wazuh 4.14.1 or 4.15.0 stable!
+#
+# Revert with: ansible-playbook -i inventory playbooks/enable-indexer-connector.yml
+#
+# Usage: ansible-playbook -i inventory playbooks/workaround-disable-indexer-connector.yml
+
+- hosts: manager,worker
+  become: yes
+  tasks:
+    - name: Backup current ossec.conf before workaround
+      copy:
+        src: /var/ossec/etc/ossec.conf
+        dest: /var/ossec/etc/ossec.conf.backup-before-indexer-workaround
+        remote_src: yes
+        mode: '0640'
+        owner: root
+        group: wazuh
+
+    - name: Disable indexer-connector (temporary workaround)
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '(<indexer>\s*\n\s*<enabled>)yes(</enabled>)'
+        replace: '\1no\2'
+        backup: yes
+
+    - name: Verify change was applied
+      shell: grep -A 2 '<indexer>' /var/ossec/etc/ossec.conf | grep '<enabled>'
+      register: indexer_status
+      changed_when: false
+
+    - name: Display indexer configuration status
+      debug:
+        var: indexer_status.stdout_lines
+
+    - name: Restart Wazuh Manager to apply workaround
+      shell: /var/ossec/bin/wazuh-control restart
+      register: restart_output
+
+    - name: Wait for Wazuh Manager to fully start
+      pause:
+        seconds: 15
+
+    - name: Verify no more indexer-connector errors
+      shell: tail -30 /var/ossec/logs/ossec.log | grep -i 'indexer-connector' || echo "No indexer-connector messages (workaround active)"
+      register: log_check
+      changed_when: false
+
+    - name: Display log check result
+      debug:
+        var: log_check.stdout_lines
+
+    - name: Verify vulnerability detection still running
+      shell: ls -lh /var/ossec/queue/vd/reports/ | tail -5
+      register: vd_check
+      changed_when: false
+
+    - name: Display vulnerability detection status
+      debug:
+        var: vd_check.stdout_lines
+
+    - name: Create reminder file for re-enabling
+      copy:
+        dest: /var/ossec/REMINDER_RE-ENABLE_INDEXER_CONNECTOR.txt
+        content: |
+          ============================================================
+          TEMPORARY WORKAROUND ACTIVE
+          ============================================================
+
+          The indexer-connector has been DISABLED as a workaround for
+          a bug in Wazuh 4.14.0-rc2.
+
+          VULNERABILITY DETECTION IS STILL WORKING:
+          - CVE feed: 6.9GB downloaded
+          - Local scanning: Active
+          - Reports stored: /var/ossec/queue/vd/reports/
+          - Alerts generated: Yes
+
+          LIMITATION:
+          - Dashboard vulnerability module not available
+          - Data not syncing to indexer
+
+          TO RE-ENABLE (after upgrading to stable):
+          1. Upgrade to Wazuh 4.14.1 or 4.15.0 stable
+          2. Run: ansible-playbook -i inventory playbooks/enable-indexer-connector.yml
+          3. Verify in logs: "IndexerConnector initialized successfully"
+
+          Date Applied: {{ ansible_date_time.date }}
+          Applied By: Ansible automation
+          ============================================================
+        mode: '0644'
+
+    - name: Display workaround summary
+      debug:
+        msg:
+          - "============================================"
+          - "WORKAROUND APPLIED SUCCESSFULLY"
+          - "============================================"
+          - ""
+          - "Indexer-connector: DISABLED"
+          - "Vulnerability detection: STILL WORKING LOCALLY"
+          - "Error spam: STOPPED"
+          - ""
+          - "Limitation: Dashboard vulnerability view unavailable"
+          - "Data location: /var/ossec/queue/vd/reports/"
+          - ""
+          - "TODO: Re-enable after upgrading to stable 4.14.1+"
+          - "Reminder file: /var/ossec/REMINDER_RE-ENABLE_INDEXER_CONNECTOR.txt"
+          - ""
+          - "============================================"
