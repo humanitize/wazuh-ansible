@@ -1,0 +1,59 @@
+---
+# Playbook to enable Filebeat compatibility in Wazuh Indexer
+#
+# Problem: Filebeat 7.x sends deprecated "_type" parameter which causes
+# "Action/metadata line [1] contains an unknown parameter [_type]" error
+#
+# Solution: Enable compatibility.override_main_response_version in indexer
+# This tells OpenSearch to accept the _type parameter from Filebeat
+#
+# Usage: ansible-playbook -i inventory playbooks/fix-indexer-filebeat-compatibility.yml
+
+- hosts: wi_cluster
+  become: yes
+  become_user: root
+
+  tasks:
+    - name: Backup current indexer configuration
+      copy:
+        src: /etc/wazuh-indexer/opensearch.yml
+        dest: /etc/wazuh-indexer/opensearch.yml.backup
+        remote_src: yes
+        mode: '0644'
+
+    - name: Check if compatibility setting already exists
+      shell: grep -q 'compatibility.override_main_response_version' /etc/wazuh-indexer/opensearch.yml
+      register: compat_exists
+      failed_when: false
+      changed_when: false
+
+    - name: Add Filebeat compatibility setting to indexer config
+      lineinfile:
+        path: /etc/wazuh-indexer/opensearch.yml
+        line: 'compatibility.override_main_response_version: true'
+        state: present
+        insertafter: EOF
+      when: compat_exists.rc != 0
+
+    - name: Restart Wazuh Indexer service
+      systemd:
+        name: wazuh-indexer
+        state: restarted
+
+    - name: Wait for indexer to start
+      wait_for:
+        host: "{{ hostvars[inventory_hostname]['private_ip'] | default(ansible_default_ipv4.address) }}"
+        port: 9200
+        delay: 10
+        timeout: 60
+
+    - name: Check indexer status
+      systemd:
+        name: wazuh-indexer
+        state: started
+      check_mode: yes
+      register: indexer_status
+
+    - name: Display indexer status
+      debug:
+        msg: "Wazuh Indexer is {{ 'running' if not indexer_status.changed else 'not running' }} on {{ inventory_hostname }}"

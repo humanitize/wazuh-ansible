@@ -22,6 +22,9 @@ node.max_local_storage_nodes: "3"
 path.data: /var/lib/wazuh-indexer
 path.logs: /var/log/wazuh-indexer
 
+# Filebeat 7.x compatibility: Allow _type parameter for OpenSearch 2.x
+compatibility.override_main_response_version: true
+
 
 ###############################################################################
 #                                                                             #

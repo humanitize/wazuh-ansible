@@ -1,0 +1,78 @@
+---
+# Playbook to restore Filebeat configuration to clean version
+# After enabling indexer compatibility, we don't need custom Filebeat workarounds
+#
+# Usage: ansible-playbook -i inventory playbooks/restore-filebeat-config.yml
+
+- hosts: manager,worker
+  become: yes
+  become_user: root
+
+  tasks:
+    - name: Backup current (broken) Filebeat configuration
+      copy:
+        src: /etc/filebeat/filebeat.yml
+        dest: /etc/filebeat/filebeat.yml.broken
+        remote_src: yes
+        mode: '0644'
+
+    - name: Restore Filebeat configuration from backup
+      copy:
+        src: /etc/filebeat/filebeat.yml.backup
+        dest: /etc/filebeat/filebeat.yml
+        remote_src: yes
+        mode: '0644'
+      when: ansible_facts['stat']['exists'] | default(false)
+
+    - name: Check if backup exists
+      stat:
+        path: /etc/filebeat/filebeat.yml.backup
+      register: backup_file
+
+    - name: Deploy clean Filebeat configuration if no backup exists
+      template:
+        src: ../roles/wazuh/ansible-filebeat-oss/templates/filebeat.yml.j2
+        dest: /etc/filebeat/filebeat.yml
+        owner: root
+        group: root
+        mode: '0644'
+      vars:
+        filebeat_output_indexer_hosts:
+          - "https://10.250.32.113:9200"
+          - "https://10.250.32.114:9200"
+          - "https://10.250.32.115:9200"
+        filebeat_security: true
+        indexer_security_user: "admin"
+        indexer_security_password: "changeme"
+        filebeat_ssl_dir: "/etc/filebeat/certs"
+        filebeat_node_name: "{{ inventory_hostname }}"
+      when: not backup_file.stat.exists
+
+    - name: Restart Filebeat service
+      systemd:
+        name: filebeat
+        state: restarted
+
+    - name: Wait for Filebeat to stabilize
+      pause:
+        seconds: 5
+
+    - name: Check Filebeat status
+      systemd:
+        name: filebeat
+        state: started
+      check_mode: yes
+      register: filebeat_status
+
+    - name: Display Filebeat status
+      debug:
+        msg: "Filebeat is {{ 'running' if not filebeat_status.changed else 'not running' }} on {{ inventory_hostname }}"
+
+    - name: Check Filebeat logs for errors
+      shell: journalctl -u filebeat -n 20 --no-pager | grep -i error || echo "No errors found"
+      register: filebeat_logs
+      changed_when: false
+
+    - name: Display recent Filebeat logs
+      debug:
+        var: filebeat_logs.stdout_lines
