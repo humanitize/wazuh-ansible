@@ -1,0 +1,231 @@
+---
+# TEMPORARY WORKAROUND: Use admin certificates for indexer-connector
+#
+# Context: Wazuh 4.14.0-rc2 bug - node certificates get 401 Unauthorized
+# Solution: Use admin certificates which we verified work
+#
+# THIS IS A TEMPORARY HACK - Proper fix coming in Wazuh 4.14.1+
+# Safe for internal network (indexers not exposed to internet)
+#
+# REVERT WITH: git checkout before-ssl-workaround
+#              ansible-playbook -i inventory site.yml
+#
+# Usage: ansible-playbook -i inventory playbooks/workaround-use-admin-cert.yml
+
+- hosts: manager,worker
+  become: yes
+  vars:
+    admin_cert_source_host: "10.250.32.113"  # wi1
+
+  tasks:
+    - name: Display workaround information
+      debug:
+        msg:
+          - "============================================"
+          - "APPLYING ADMIN CERTIFICATE WORKAROUND"
+          - "============================================"
+          - ""
+          - "Strategy: Replace node certs with admin certs"
+          - "Why: Admin cert authenticates successfully"
+          - "Safety: Internal network only"
+          - ""
+          - "Git tag: 'before-ssl-workaround' for rollback"
+          - "Revert: git checkout before-ssl-workaround"
+          - ""
+          - "============================================"
+
+    - name: Backup current ossec.conf
+      copy:
+        src: /var/ossec/etc/ossec.conf
+        dest: /var/ossec/etc/ossec.conf.backup-admin-cert-{{ ansible_date_time.epoch }}
+        remote_src: yes
+        mode: '0640'
+        owner: root
+        group: wazuh
+
+    - name: Backup current certificates
+      shell: |
+        mkdir -p /etc/pki/filebeat/backup-{{ ansible_date_time.epoch }}
+        cp /etc/pki/filebeat/*.pem /etc/pki/filebeat/backup-{{ ansible_date_time.epoch }}/
+      args:
+        creates: /etc/pki/filebeat/backup-*
+
+    - name: Fetch admin certificate from indexer
+      fetch:
+        src: /etc/wazuh-indexer/certs/admin.pem
+        dest: /tmp/wazuh-admin-certs/admin.pem
+        flat: yes
+      delegate_to: "{{ admin_cert_source_host }}"
+      run_once: true
+
+    - name: Fetch admin key from indexer
+      fetch:
+        src: /etc/wazuh-indexer/certs/admin-key.pem
+        dest: /tmp/wazuh-admin-certs/admin-key.pem
+        flat: yes
+      delegate_to: "{{ admin_cert_source_host }}"
+      run_once: true
+
+    - name: Fetch root CA from indexer
+      fetch:
+        src: /etc/wazuh-indexer/certs/root-ca.pem
+        dest: /tmp/wazuh-admin-certs/root-ca.pem
+        flat: yes
+      delegate_to: "{{ admin_cert_source_host }}"
+      run_once: true
+
+    - name: Copy admin certificate to manager
+      copy:
+        src: /tmp/wazuh-admin-certs/admin.pem
+        dest: /etc/pki/filebeat/admin.pem
+        mode: '0640'
+        owner: root
+        group: wazuh
+
+    - name: Copy admin key to manager
+      copy:
+        src: /tmp/wazuh-admin-certs/admin-key.pem
+        dest: /etc/pki/filebeat/admin-key.pem
+        mode: '0640'
+        owner: root
+        group: wazuh
+
+    - name: Copy root CA to manager
+      copy:
+        src: /tmp/wazuh-admin-certs/root-ca.pem
+        dest: /etc/pki/filebeat/root-ca-indexer.pem
+        mode: '0640'
+        owner: root
+        group: wazuh
+
+    - name: Update ossec.conf to use admin certificates
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '<ca>/etc/pki/filebeat/root-ca.pem</ca>'
+        replace: '<ca>/etc/pki/filebeat/root-ca-indexer.pem</ca>'
+
+    - name: Update certificate path in ossec.conf
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '<certificate>/etc/pki/filebeat/node-\d+\.pem</certificate>'
+        replace: '<certificate>/etc/pki/filebeat/admin.pem</certificate>'
+
+    - name: Update key path in ossec.conf
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '<key>/etc/pki/filebeat/node-\d+-key\.pem</key>'
+        replace: '<key>/etc/pki/filebeat/admin-key.pem</key>'
+
+    - name: Verify new configuration
+      shell: grep -A 10 '<indexer>' /var/ossec/etc/ossec.conf | grep -E '(ca|certificate|key)'
+      register: new_config
+      changed_when: false
+
+    - name: Display new configuration
+      debug:
+        var: new_config.stdout_lines
+
+    - name: Test admin certificate connection
+      shell: |
+        curl -k -s --max-time 5 \
+          --cert /etc/pki/filebeat/admin.pem \
+          --key /etc/pki/filebeat/admin-key.pem \
+          --cacert /etc/pki/filebeat/root-ca-indexer.pem \
+          'https://{{ admin_cert_source_host }}:9200/_cluster/health' | head -20
+      register: test_connection
+      changed_when: false
+      failed_when: false
+
+    - name: Display connection test result
+      debug:
+        var: test_connection.stdout
+
+    - name: Restart Wazuh Manager
+      shell: /var/ossec/bin/wazuh-control restart
+
+    - name: Wait for Manager to start
+      pause:
+        seconds: 25
+        prompt: "Waiting for Wazuh Manager to start with admin certificates..."
+
+    - name: Check indexer-connector status
+      shell: tail -50 /var/ossec/logs/ossec.log | grep -i 'indexer-connector' | tail -15
+      register: connector_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Display indexer-connector logs
+      debug:
+        var: connector_logs.stdout_lines
+
+    - name: Check for success message
+      shell: tail -30 /var/ossec/logs/ossec.log | grep -i 'IndexerConnector initialized successfully' || echo "Not found"
+      register: success_check
+      changed_when: false
+
+    - name: Check for errors
+      shell: tail -30 /var/ossec/logs/ossec.log | grep -i 'No available server\|401\|Unauthorized' || echo "No errors"
+      register: error_check
+      changed_when: false
+
+    - name: Create revert playbook
+      copy:
+        dest: /var/ossec/REVERT_ADMIN_CERT_WORKAROUND.sh
+        content: |
+          #!/bin/bash
+          echo "Reverting admin certificate workaround..."
+          echo ""
+          echo "Method 1: Using Git (recommended)"
+          echo "  cd {{ playbook_dir | dirname }}"
+          echo "  git checkout before-ssl-workaround"
+          echo "  ansible-playbook -i inventory site.yml"
+          echo ""
+          echo "Method 2: Using backup"
+          BACKUP=$(ls -t /var/ossec/etc/ossec.conf.backup-admin-cert-* 2>/dev/null | head -1)
+          CERT_BACKUP=$(ls -td /etc/pki/filebeat/backup-* 2>/dev/null | head -1)
+          if [ -n "$BACKUP" ] && [ -n "$CERT_BACKUP" ]; then
+            echo "  Found backups:"
+            echo "    Config: $BACKUP"
+            echo "    Certs:  $CERT_BACKUP"
+            read -p "Restore from backups? (y/n) " -n 1 -r
+            echo
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+              cp "$BACKUP" /var/ossec/etc/ossec.conf
+              cp "$CERT_BACKUP"/* /etc/pki/filebeat/
+              /var/ossec/bin/wazuh-control restart
+              echo "Reverted!"
+            fi
+          fi
+        mode: '0755'
+
+    - name: Display final status
+      debug:
+        msg:
+          - "============================================"
+          - "WORKAROUND APPLICATION COMPLETE"
+          - "============================================"
+          - ""
+          - "Admin certificates deployed to managers"
+          - "Configuration updated"
+          - "Wazuh Manager restarted"
+          - ""
+          - "CHECK RESULTS ABOVE:"
+          - "  - Success: Look for 'IndexerConnector initialized successfully'"
+          - "  - Failure: Look for 'No available server' or '401'"
+          - ""
+          - "If successful:"
+          - "  → Dashboard vulnerability module should work now"
+          - "  → Check: /var/ossec/logs/ossec.log for sync activity"
+          - ""
+          - "To revert:"
+          - "  1. git checkout before-ssl-workaround"
+          - "  2. ansible-playbook -i inventory site.yml"
+          - "  OR run: /var/ossec/REVERT_ADMIN_CERT_WORKAROUND.sh"
+          - ""
+          - "Remember: Upgrade to Wazuh 4.14.1+ and revert this hack!"
+          - ""
+          - "============================================"
+
+    - name: Show success or failure
+      debug:
+        msg: "{{ 'SUCCESS! Workaround worked!' if 'initialized successfully' in success_check.stdout else 'FAILED - Check logs above for errors' }}"

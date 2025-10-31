@@ -1,0 +1,181 @@
+---
+# TEMPORARY SSL WORKAROUND: Remove SSL requirement from indexer-connector
+#
+# Context: Wazuh 4.14.0-rc2 indexer-connector bug with client cert authentication
+# Strategy: Try removing SSL config to force basic HTTP auth only
+#
+# THIS IS A TEMPORARY HACK - NOT FOR PRODUCTION!
+# Internal network only - indexers not exposed to internet
+#
+# REVERT WITH: git checkout before-ssl-workaround -- roles/ playbooks/
+#              OR: ansible-playbook -i inventory playbooks/revert-ssl-workaround.yml
+#
+# Usage: ansible-playbook -i inventory playbooks/workaround-disable-indexer-ssl.yml
+
+- hosts: manager,worker
+  become: yes
+  tasks:
+    - name: Display warning about temporary hack
+      debug:
+        msg:
+          - "============================================"
+          - "WARNING: APPLYING TEMPORARY SSL WORKAROUND"
+          - "============================================"
+          - ""
+          - "This is a HACK to bypass indexer-connector bug"
+          - "Only safe because:"
+          - "  - Internal network (not exposed to internet)"
+          - "  - Temporary until Wazuh 4.14.1 stable"
+          - ""
+          - "Git tag 'before-ssl-workaround' created for rollback"
+          - ""
+          - "============================================"
+
+    - name: Backup current ossec.conf
+      copy:
+        src: /var/ossec/etc/ossec.conf
+        dest: /var/ossec/etc/ossec.conf.backup-ssl-workaround-{{ ansible_date_time.epoch }}
+        remote_src: yes
+        mode: '0640'
+        owner: root
+        group: wazuh
+
+    - name: Read current ossec.conf
+      slurp:
+        src: /var/ossec/etc/ossec.conf
+      register: ossec_conf_content
+
+    - name: Remove SSL section from indexer configuration (attempt 1)
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '(?s)<ssl>.*?</ssl>'
+        replace: ''
+        backup: yes
+
+    - name: Change HTTPS to HTTP in indexer hosts (attempt 2)
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: 'https://'
+        replace: 'http://'
+
+    - name: Verify changes
+      shell: grep -A 10 '<indexer>' /var/ossec/etc/ossec.conf | head -15
+      register: new_config
+      changed_when: false
+
+    - name: Display new configuration
+      debug:
+        var: new_config.stdout_lines
+
+    - name: Create rollback script
+      copy:
+        dest: /var/ossec/ROLLBACK_SSL_WORKAROUND.sh
+        content: |
+          #!/bin/bash
+          # Rollback SSL workaround
+          echo "Rolling back SSL workaround..."
+
+          # Find most recent backup before workaround
+          BACKUP=$(ls -t /var/ossec/etc/ossec.conf.backup-ssl-workaround-* 2>/dev/null | head -1)
+
+          if [ -n "$BACKUP" ]; then
+            echo "Restoring from: $BACKUP"
+            cp "$BACKUP" /var/ossec/etc/ossec.conf
+            /var/ossec/bin/wazuh-control restart
+            echo "Rollback complete!"
+            echo "Alternatively, use Git: git checkout before-ssl-workaround"
+          else
+            echo "ERROR: No backup found!"
+            echo "Use Git to restore: git checkout before-ssl-workaround -- ."
+            exit 1
+          fi
+        mode: '0755'
+
+    - name: Pause before restart
+      pause:
+        prompt: |
+
+          Configuration changed to remove SSL from indexer-connector.
+          About to restart Wazuh Manager.
+
+          This might NOT work - the indexer may reject HTTP connections.
+          If it fails, rollback with: /var/ossec/ROLLBACK_SSL_WORKAROUND.sh
+
+          Press ENTER to continue or Ctrl+C to abort...
+        echo: yes
+
+    - name: Restart Wazuh Manager
+      shell: /var/ossec/bin/wazuh-control restart
+      register: restart_output
+
+    - name: Wait for startup
+      pause:
+        seconds: 20
+
+    - name: Check for indexer-connector status
+      shell: tail -50 /var/ossec/logs/ossec.log | grep -i 'indexer-connector' | tail -10
+      register: connector_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display connector status
+      debug:
+        var: connector_status.stdout_lines
+
+    - name: Check for success or failure
+      shell: |
+        if tail -20 /var/ossec/logs/ossec.log | grep -q 'IndexerConnector initialized successfully'; then
+          echo "SUCCESS: Workaround worked!"
+          exit 0
+        elif tail -20 /var/ossec/logs/ossec.log | grep -q 'No available server'; then
+          echo "FAILED: Still getting errors - workaround did not help"
+          exit 1
+        else
+          echo "UNKNOWN: Check logs manually"
+          exit 2
+        fi
+      register: final_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display final status
+      debug:
+        var: final_status.stdout
+
+    - name: Show rollback instructions if failed
+      debug:
+        msg:
+          - "============================================"
+          - "WORKAROUND DID NOT WORK"
+          - "============================================"
+          - ""
+          - "To rollback:"
+          - "  1. Run: /var/ossec/ROLLBACK_SSL_WORKAROUND.sh"
+          - "  OR"
+          - "  2. Git: git checkout before-ssl-workaround"
+          - "  3. Re-deploy: ansible-playbook -i inventory playbooks/deploy-manager.yml"
+          - ""
+          - "============================================"
+      when: final_status.rc == 1
+
+    - name: Show success message
+      debug:
+        msg:
+          - "============================================"
+          - "WORKAROUND SUCCESSFUL!"
+          - "============================================"
+          - ""
+          - "Indexer-connector is working without SSL"
+          - "Dashboard should now show vulnerabilities"
+          - ""
+          - "IMPORTANT REMINDERS:"
+          - "  - This is a temporary hack"
+          - "  - Only safe on internal network"
+          - "  - Rollback after upgrading to Wazuh 4.14.1+"
+          - ""
+          - "To revert later:"
+          - "  git checkout before-ssl-workaround"
+          - "  ansible-playbook -i inventory playbooks/deploy-manager.yml"
+          - ""
+          - "============================================"
+      when: final_status.rc == 0
