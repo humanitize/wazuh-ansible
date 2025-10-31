@@ -26,6 +26,13 @@
       failed_when: false
       changed_when: false
 
+    - name: Add template pattern setting (required when index is customized)
+      lineinfile:
+        path: /etc/filebeat/filebeat.yml
+        insertafter: "^setup.template.json.name:"
+        line: "setup.template.pattern: 'wazuh-alerts-*'"
+        state: present
+
     - name: Add OpenSearch 2.x compatibility settings
       blockinfile:
         path: /etc/filebeat/filebeat.yml
