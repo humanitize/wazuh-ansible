@@ -145,7 +145,7 @@
     - name: Wait for cluster sync
       pause:
         seconds: 30
-      when: inventory_hostname != groups['worker'][-1]
+      when: inventory_hostname == 'manager'
 
 - name: Upgrade Wazuh Dashboard to 4.14.1
   hosts: dashboard
