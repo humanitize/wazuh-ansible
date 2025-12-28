@@ -1,0 +1,263 @@
+---
+# Playbook to upgrade Wazuh from 4.14.0-rc2 to 4.14.1 stable
+#
+# This upgrade fixes:
+# - Indexer-connector authentication issues (#32787)
+# - Abuse control data loss prevention (#32787)
+# - Vulnerability scanner database offset bug (#32829)
+# - Dashboard inventory display issues (#7803)
+#
+# After upgrade, run: playbooks/revert-admin-cert-workaround.yml
+# to restore proper node certificates
+#
+# Usage: ansible-playbook -i inventory playbooks/upgrade-to-4.14.1.yml
+
+- name: Upgrade Wazuh Indexer Cluster to 4.14.1
+  hosts: wi_cluster
+  become: yes
+  serial: 1  # Rolling upgrade - one indexer at a time
+  vars:
+    wazuh_version: "4.14.1"
+  tasks:
+    - name: Add Wazuh stable repository GPG key
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Remove pre-release repository if present
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages-dev.wazuh.com/pre-release/apt/ unstable main"
+        state: absent
+        filename: wazuh-pre-release
+      ignore_errors: yes
+
+    - name: Add Wazuh stable repository
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        filename: wazuh
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Get current indexer version
+      shell: dpkg -l wazuh-indexer | grep wazuh-indexer | awk '{print $3}'
+      register: current_version
+      changed_when: false
+
+    - name: Display current version
+      debug:
+        msg: "Current version: {{ current_version.stdout }}, upgrading to {{ wazuh_version }}"
+
+    - name: Upgrade Wazuh indexer to {{ wazuh_version }}
+      apt:
+        name: "wazuh-indexer={{ wazuh_version }}-*"
+        state: present
+        force: yes
+      register: indexer_upgrade
+
+    - name: Restart Wazuh indexer
+      systemd:
+        name: wazuh-indexer
+        state: restarted
+      when: indexer_upgrade.changed
+
+    - name: Wait for indexer to be available
+      wait_for:
+        host: "{{ hostvars[inventory_hostname]['private_ip'] | default(ansible_default_ipv4.address) }}"
+        port: 9200
+        delay: 15
+        timeout: 180
+
+    - name: Wait for cluster to stabilize
+      pause:
+        seconds: 30
+      when: inventory_hostname != groups['wi_cluster'][-1]
+
+- name: Upgrade Wazuh Managers to 4.14.1
+  hosts: manager,worker
+  become: yes
+  serial: 1  # Rolling upgrade - one manager at a time
+  vars:
+    wazuh_version: "4.14.1"
+  tasks:
+    - name: Add Wazuh stable repository GPG key
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Remove pre-release repository if present
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages-dev.wazuh.com/pre-release/apt/ unstable main"
+        state: absent
+        filename: wazuh-pre-release
+      ignore_errors: yes
+
+    - name: Add Wazuh stable repository
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        filename: wazuh
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Get current manager version
+      shell: /var/ossec/bin/wazuh-control info | grep VERSION | cut -d'"' -f2
+      register: current_version
+      changed_when: false
+
+    - name: Display current version
+      debug:
+        msg: "Current version: {{ current_version.stdout }}, upgrading to {{ wazuh_version }}"
+
+    - name: Upgrade Wazuh manager to {{ wazuh_version }}
+      apt:
+        name: "wazuh-manager={{ wazuh_version }}-*"
+        state: present
+        force: yes
+      register: manager_upgrade
+
+    - name: Restart Wazuh manager
+      systemd:
+        name: wazuh-manager
+        state: restarted
+      when: manager_upgrade.changed
+
+    - name: Wait for Wazuh manager to be available
+      wait_for:
+        host: "{{ hostvars[inventory_hostname]['private_ip'] | default(ansible_default_ipv4.address) }}"
+        port: 1514
+        delay: 15
+        timeout: 180
+
+    - name: Verify manager version
+      shell: /var/ossec/bin/wazuh-control info
+      register: version_info
+      changed_when: false
+
+    - name: Display version info
+      debug:
+        var: version_info.stdout_lines
+
+    - name: Wait for cluster sync
+      pause:
+        seconds: 30
+      when: inventory_hostname != groups['worker'][-1]
+
+- name: Upgrade Wazuh Dashboard to 4.14.1
+  hosts: dashboard
+  become: yes
+  vars:
+    wazuh_version: "4.14.1"
+  tasks:
+    - name: Add Wazuh stable repository GPG key
+      apt_key:
+        url: https://packages.wazuh.com/key/GPG-KEY-WAZUH
+        state: present
+
+    - name: Remove pre-release repository if present
+      apt_repository:
+        repo: "deb [signed-by=/usr/share/keyrings/wazuh.gpg] https://packages-dev.wazuh.com/pre-release/apt/ unstable main"
+        state: absent
+        filename: wazuh-pre-release
+      ignore_errors: yes
+
+    - name: Add Wazuh stable repository
+      apt_repository:
+        repo: "deb https://packages.wazuh.com/4.x/apt/ stable main"
+        state: present
+        filename: wazuh
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Upgrade Wazuh dashboard to {{ wazuh_version }}
+      apt:
+        name: "wazuh-dashboard={{ wazuh_version }}-*"
+        state: present
+        force: yes
+      register: dashboard_upgrade
+
+    - name: Restart Wazuh dashboard
+      systemd:
+        name: wazuh-dashboard
+        state: restarted
+      when: dashboard_upgrade.changed
+
+    - name: Wait for dashboard to be available
+      wait_for:
+        port: 443
+        delay: 15
+        timeout: 180
+
+- name: Verify upgrade and check indexer-connector
+  hosts: manager
+  become: yes
+  tasks:
+    - name: Wait for services to fully initialize
+      pause:
+        seconds: 60
+
+    - name: Check manager version
+      shell: /var/ossec/bin/wazuh-control info
+      register: manager_version
+      changed_when: false
+
+    - name: Display manager version
+      debug:
+        var: manager_version.stdout_lines
+
+    - name: Check for indexer-connector status
+      shell: |
+        tail -100 /var/ossec/logs/ossec.log | grep -i 'indexer-connector' | tail -10
+      register: connector_status
+      changed_when: false
+      failed_when: false
+
+    - name: Display indexer-connector status
+      debug:
+        var: connector_status.stdout_lines
+
+    - name: Check for successful initialization
+      shell: |
+        grep -i "IndexerConnector initialized successfully" /var/ossec/logs/ossec.log | tail -5
+      register: init_success
+      changed_when: false
+      failed_when: false
+
+    - name: Display initialization status
+      debug:
+        msg: "{{ init_success.stdout_lines if init_success.stdout_lines else 'No successful initialization messages yet - may take a few minutes' }}"
+
+    - name: Check vulnerability index document count
+      shell: |
+        curl -k -s -u admin:'{{ indexer_admin_password | default("changeme") }}' \
+        'https://10.250.32.113:9200/wazuh-states-vulnerabilities-wazuh/_count' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('count', 'N/A'))"
+      register: vuln_count
+      changed_when: false
+      failed_when: false
+
+    - name: Display vulnerability count
+      debug:
+        msg: "Vulnerability documents in index: {{ vuln_count.stdout | default('Unable to query') }}"
+
+    - name: Upgrade summary
+      debug:
+        msg:
+          - "=========================================="
+          - "UPGRADE TO WAZUH 4.14.1 COMPLETED"
+          - "=========================================="
+          - ""
+          - "Next steps:"
+          - "1. Monitor /var/ossec/logs/ossec.log for indexer-connector success"
+          - "2. Check dashboard for vulnerability data"
+          - "3. If working, run: playbooks/revert-admin-cert-workaround.yml"
+          - "   to restore proper node certificates"
+          - ""
+          - "Expected log message on success:"
+          - "  'IndexerConnector initialized successfully'"
+          - "=========================================="

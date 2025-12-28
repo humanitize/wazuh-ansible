@@ -1,0 +1,218 @@
+---
+# Revert admin certificate workaround after upgrading to Wazuh 4.14.1+
+#
+# Context: The admin-cert workaround was applied to fix indexer-connector
+# bug in 4.14.0-rc2. Now that 4.14.1 is installed, we can restore
+# proper node certificates.
+#
+# Prerequisites:
+#   - Wazuh 4.14.1 or later installed
+#   - IndexerConnector working (verify first!)
+#
+# Usage: ansible-playbook -i inventory playbooks/revert-admin-cert-workaround.yml
+
+- name: Verify prerequisites before reverting workaround
+  hosts: manager
+  become: yes
+  tasks:
+    - name: Check Wazuh version
+      shell: /var/ossec/bin/wazuh-control info | grep VERSION | cut -d'"' -f2
+      register: wazuh_version
+      changed_when: false
+
+    - name: Verify version is 4.14.1+
+      assert:
+        that:
+          - wazuh_version.stdout is version('4.14.1', '>=')
+        fail_msg: "Wazuh version {{ wazuh_version.stdout }} < 4.14.1 - upgrade first!"
+        success_msg: "Wazuh version {{ wazuh_version.stdout }} - OK to proceed"
+
+    - name: Check if IndexerConnector is working
+      shell: |
+        grep -i "IndexerConnector initialized successfully" /var/ossec/logs/ossec.log | tail -1
+      register: connector_status
+      changed_when: false
+      failed_when: false
+
+    - name: Warn if IndexerConnector not confirmed working
+      debug:
+        msg: |
+          WARNING: Could not confirm IndexerConnector is working.
+          Last check: {{ connector_status.stdout | default('No success message found') }}
+
+          Proceeding with revert - if issues occur, re-apply workaround.
+      when: connector_status.stdout == ""
+
+- name: Revert admin certificate workaround on managers
+  hosts: manager,worker
+  become: yes
+  vars:
+    node_certs:
+      manager: "node-4"
+      worker: "node-5"
+  tasks:
+    - name: Display revert information
+      debug:
+        msg:
+          - "============================================"
+          - "REVERTING ADMIN CERTIFICATE WORKAROUND"
+          - "============================================"
+          - ""
+          - "Restoring proper node certificates:"
+          - "  - {{ inventory_hostname }}: {{ node_certs[inventory_hostname] }}"
+          - ""
+          - "============================================"
+
+    - name: Determine node name
+      set_fact:
+        node_name: "{{ node_certs[inventory_hostname] | default('node-4') }}"
+
+    - name: Check if node certificates exist
+      stat:
+        path: "/etc/pki/filebeat/{{ node_name }}.pem"
+      register: node_cert
+
+    - name: Check backup for node certificates
+      shell: |
+        BACKUP=$(ls -td /etc/pki/filebeat/backup-* 2>/dev/null | head -1)
+        if [ -n "$BACKUP" ] && [ -f "$BACKUP/{{ node_name }}.pem" ]; then
+          echo "$BACKUP"
+        fi
+      register: backup_dir
+      changed_when: false
+
+    - name: Restore node certificate from backup
+      copy:
+        src: "{{ backup_dir.stdout }}/{{ node_name }}.pem"
+        dest: "/etc/pki/filebeat/{{ node_name }}.pem"
+        remote_src: yes
+        mode: '0640'
+        owner: root
+        group: wazuh
+      when:
+        - not node_cert.stat.exists
+        - backup_dir.stdout != ""
+
+    - name: Restore node key from backup
+      copy:
+        src: "{{ backup_dir.stdout }}/{{ node_name }}-key.pem"
+        dest: "/etc/pki/filebeat/{{ node_name }}-key.pem"
+        remote_src: yes
+        mode: '0640'
+        owner: root
+        group: wazuh
+      when:
+        - backup_dir.stdout != ""
+
+    - name: Update ossec.conf to use node certificate
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '<certificate>/etc/pki/filebeat/admin\.pem</certificate>'
+        replace: '<certificate>/etc/pki/filebeat/{{ node_name }}.pem</certificate>'
+      register: cert_updated
+
+    - name: Update ossec.conf to use node key
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '<key>/etc/pki/filebeat/admin-key\.pem</key>'
+        replace: '<key>/etc/pki/filebeat/{{ node_name }}-key.pem</key>'
+      register: key_updated
+
+    - name: Update CA path if needed
+      replace:
+        path: /var/ossec/etc/ossec.conf
+        regexp: '<ca>/etc/pki/filebeat/root-ca-indexer\.pem</ca>'
+        replace: '<ca>/etc/pki/filebeat/root-ca.pem</ca>'
+      register: ca_updated
+
+    - name: Verify updated configuration
+      shell: grep -A 10 '<indexer>' /var/ossec/etc/ossec.conf | grep -E '(ca|certificate|key)'
+      register: new_config
+      changed_when: false
+
+    - name: Display updated configuration
+      debug:
+        var: new_config.stdout_lines
+
+    - name: Restart Wazuh Manager
+      shell: /var/ossec/bin/wazuh-control restart
+      when: cert_updated.changed or key_updated.changed or ca_updated.changed
+
+    - name: Wait for Manager to start
+      pause:
+        seconds: 30
+      when: cert_updated.changed or key_updated.changed or ca_updated.changed
+
+    - name: Check indexer-connector status after revert
+      shell: tail -50 /var/ossec/logs/ossec.log | grep -i 'indexer-connector' | tail -10
+      register: connector_logs
+      changed_when: false
+      failed_when: false
+
+    - name: Display indexer-connector logs
+      debug:
+        var: connector_logs.stdout_lines
+
+    - name: Check for success
+      shell: |
+        tail -30 /var/ossec/logs/ossec.log | grep -i 'IndexerConnector initialized successfully' || echo "Not found yet"
+      register: success_check
+      changed_when: false
+
+    - name: Check for errors
+      shell: |
+        tail -30 /var/ossec/logs/ossec.log | grep -i 'No available server\|401\|Unauthorized' | tail -3 || echo "No errors"
+      register: error_check
+      changed_when: false
+
+    - name: Display final status
+      debug:
+        msg:
+          - "============================================"
+          - "WORKAROUND REVERT COMPLETE"
+          - "============================================"
+          - ""
+          - "Node certificates restored for {{ inventory_hostname }}"
+          - ""
+          - "Success check: {{ success_check.stdout }}"
+          - "Error check: {{ error_check.stdout }}"
+          - ""
+          - "If indexer-connector fails with node certs:"
+          - "  Re-apply workaround:"
+          - "  ansible-playbook -i inventory playbooks/workaround-use-admin-cert.yml"
+          - ""
+          - "============================================"
+
+- name: Final verification
+  hosts: manager
+  become: yes
+  tasks:
+    - name: Wait for full initialization
+      pause:
+        seconds: 60
+        prompt: "Waiting for indexer-connector to fully initialize..."
+
+    - name: Check vulnerability index
+      shell: |
+        curl -k -s -u admin:'{{ indexer_admin_password | default("changeme") }}' \
+        'https://10.250.32.113:9200/wazuh-states-vulnerabilities-wazuh/_count' 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('count', 'N/A'))"
+      register: vuln_count
+      changed_when: false
+      failed_when: false
+
+    - name: Final summary
+      debug:
+        msg:
+          - "============================================"
+          - "ADMIN CERTIFICATE WORKAROUND REVERTED"
+          - "============================================"
+          - ""
+          - "Vulnerability documents: {{ vuln_count.stdout | default('Unable to query') }}"
+          - ""
+          - "Managers are now using proper node certificates."
+          - "This is the correct production configuration."
+          - ""
+          - "Monitor logs for any issues:"
+          - "  tail -f /var/ossec/logs/ossec.log | grep indexer-connector"
+          - ""
+          - "============================================"
